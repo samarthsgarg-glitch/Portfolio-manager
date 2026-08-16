@@ -3,117 +3,191 @@ import pandas as pd
 import plotly.express as px
 import requests
 
-# Page Layout Configuration
-st.set_page_config(page_title="Upstox Live Portfolio Analyzer", layout="wide")
-st.title("📊 Real-Time Upstox Holdings Dashboard")
+st.set_page_config(page_title="Consolidated Portfolio & Sector Exposure", layout="wide")
+st.title("📊 Consolidated Stock & Mutual Fund Exposure Dashboard")
 
-# --- SIDEBAR: AUTHENTICATION & CREDENTIALS ---
+# --- SIDEBAR AUTHENTICATION ---
 st.sidebar.header("🔑 Upstox API Credentials")
-
-# 1. Access Token Input
 access_token = st.sidebar.text_input("Enter Access Token", type="password")
 
-# 2. Upstox OAuth Login Token Generator Assistant
-with st.sidebar.expander("Generate Access Token"):
-    api_key = st.sidebar.text_input("API Key")
-    api_secret = st.sidebar.text_input("API Secret", type="password")
-    redirect_uri = st.sidebar.text_input("Redirect URI", value="https://127.0.0.1")
-    
-    if api_key:
-        login_url = f"https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id={api_key}&redirect_uri={redirect_uri}"
-        st.markdown(f"[👉 Click here to authorize on Upstox]({login_url})")
-        st.caption("Log in, copy the `code=` value from the URL, and paste it below.")
-        
-    auth_code = st.sidebar.text_input("Paste Auth Code")
-    if st.sidebar.button("Fetch Access Token"):
-        if api_key and api_secret and auth_code:
-            token_url = "https://api.upstox.com/v2/login/authorization/token"
-            payload = {
-                "code": auth_code,
-                "client_id": api_key,
-                "client_secret": api_secret,
-                "redirect_uri": redirect_uri,
-                "grant_type": "authorization_code"
-            }
-            headers = {"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"}
-            res = requests.post(token_url, data=payload, headers=headers)
-            if res.status_code == 200:
-                token_data = res.json()
-                st.sidebar.success("Access Token generated!")
-                st.sidebar.code(token_data.get("access_token"))
-            else:
-                st.sidebar.error(f"Error fetching token: {res.text}")
+# --- MUTUAL FUND CONSTITUENT MAPPING (DB / Lookups) ---
+# Maps MF ISIN/Names to underlying stock portfolio allocations & sectors
+MF_PORTFOLIO_LOOKUP = {
+    "HDFC Top 100 Fund": [
+        {"Stock": "HDFC Bank", "Weight (%)": 9.5, "Sector": "BFSI / Banking"},
+        {"Stock": "ICICI Bank", "Weight (%)": 7.8, "Sector": "BFSI / Banking"},
+        {"Stock": "Reliance Industries", "Weight (%)": 8.2, "Sector": "Renewables & Energy"},
+        {"Stock": "Infosys", "Weight (%)": 5.4, "Sector": "IT / Technology"},
+        {"Stock": "Larsen & Toubro", "Weight (%)": 4.1, "Sector": "Capital Goods / Infra"}
+    ],
+    "Parag Parikh Flexi Cap Fund": [
+        {"Stock": "HDFC Bank", "Weight (%)": 7.1, "Sector": "BFSI / Banking"},
+        {"Stock": "Bajaj Holdings", "Weight (%)": 6.3, "Sector": "BFSI / Banking"},
+        {"Stock": "ITC Ltd", "Weight (%)": 5.2, "Sector": "FMCG"},
+        {"Stock": "Alphabet Inc", "Weight (%)": 4.8, "Sector": "IT / Technology"},
+        {"Stock": "Coal India", "Weight (%)": 3.2, "Sector": "Metals & Mining"}
+    ],
+    "Nippon India Small Cap Fund": [
+        {"Stock": "Tube Investments", "Weight (%)": 3.1, "Sector": "Auto & Auto Ancillary"},
+        {"Stock": "HDFC Bank", "Weight (%)": 1.2, "Sector": "BFSI / Banking"},
+        {"Stock": "Sun Pharma", "Weight (%)": 2.8, "Sector": "Pharma & Healthcare"}
+    ]
+}
 
-# --- MAIN DASHBOARD LOGIC ---
-def get_upstox_holdings(token):
-    """Fetches real-time equity holdings from Upstox Portfolio API"""
+# Stock to Sector Fallback Lookup table for Direct Equity
+STOCK_SECTOR_MAP = {
+    "RELIANCE": "Renewables & Energy",
+    "INFY": "IT / Technology",
+    "TCS": "IT / Technology",
+    "HDFCBANK": "BFSI / Banking",
+    "ICICIBANK": "BFSI / Banking",
+    "TATAMOTORS": "Auto & Auto Ancillary",
+    "HINDUNILVR": "FMCG",
+    "SUNPHARMA": "Pharma & Healthcare",
+    "TATASTEEL": "Metals & Mining",
+    "HDFC Bank": "BFSI / Banking",
+    "Infosys": "IT / Technology",
+    "Reliance Industries": "Renewables & Energy"
+}
+
+# --- UPSTOX API FETCHERS ---
+def fetch_direct_stocks(token):
     url = "https://api.upstox.com/v2/portfolio/long-term-holdings"
-    headers = {
-        "Accept": "application/json",
-        "Authorization": f"Bearer {token}"
-    }
-    response = requests.get(url, headers=headers)
-    return response
+    headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
+    return requests.get(url, headers=headers)
 
+def fetch_mf_holdings(token):
+    url = "https://api.upstox.com/v2/mf/holdings"
+    headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
+    return requests.get(url, headers=headers)
+
+# --- APP EXECUTION ---
 if not access_token:
-    st.warning("⚠️ Please provide an **Access Token** in the sidebar to load your live portfolio.")
+    st.info("👈 Please enter your **Upstox Access Token** in the sidebar to run exposure analysis.")
 else:
-    with st.spinner("Fetching live portfolio from Upstox..."):
-        res = get_upstox_holdings(access_token)
+    with st.spinner("Fetching Stocks & Mutual Fund Holdings from Upstox..."):
+        stock_res = fetch_direct_stocks(access_token)
+        mf_res = fetch_mf_holdings(access_token)
         
-    if res.status_code == 200:
-        holdings_data = res.json().get("data", [])
-        
-        if not holdings_data:
-            st.info("No long-term holdings found in your Upstox account.")
-        else:
-            # Parse response into Pandas DataFrame
-            df = pd.DataFrame(holdings_data)
+    all_rows = []
+    
+    # 1. PROCESS DIRECT STOCKS
+    if stock_res.status_code == 200:
+        stocks_data = stock_res.json().get("data", [])
+        for item in stocks_data:
+            symbol = item.get("trading_symbol", "UNKNOWN")
+            company = item.get("company_name", symbol)
+            val = float(item.get("quantity", 0)) * float(item.get("last_price", 0))
+            sector = STOCK_SECTOR_MAP.get(symbol, STOCK_SECTOR_MAP.get(company, "Other / Uncategorized"))
             
-            # Extract relevant fields
-            df["Company"] = df["company_name"]
-            df["Quantity"] = df["quantity"]
-            df["Avg Price (₹)"] = df["average_price"]
-            df["Current Price (₹)"] = df["last_price"]
-            df["Current Value (₹)"] = df["Quantity"] * df["Current Price (₹)"]
-            df["P&L (₹)"] = df["pnl"]
+            all_rows.append({
+                "Company / Asset": company,
+                "Holding Source": "Direct Stock",
+                "Sector": sector,
+                "Exposure Value (₹)": val
+            })
             
-            # Add basic Sector mapping (Default fallback; can expand with dynamic maps later)
-            df["Sector"] = df["trading_symbol"].apply(lambda s: "Equity Stock")
+    # 2. PROCESS MUTUAL FUNDS & BREAK DOWN CONSTITUENTS
+    if mf_res.status_code == 200:
+        mf_data = mf_res.json().get("data", [])
+        for mf in mf_data:
+            scheme_name = mf.get("scheme_name", "Mutual Fund")
+            mf_total_val = float(mf.get("last_value", 0)) or (float(mf.get("quantity", 0)) * float(mf.get("last_price", 0)))
+            
+            # Check if scheme is in lookup database
+            constituents = MF_PORTFOLIO_LOOKUP.get(scheme_name, None)
+            
+            if constituents:
+                mapped_weight = 0
+                for comp in constituents:
+                    stock_name = comp["Stock"]
+                    weight = comp["Weight (%)"]
+                    sector = comp["Sector"]
+                    calculated_val = mf_total_val * (weight / 100.0)
+                    mapped_weight += weight
+                    
+                    all_rows.append({
+                        "Company / Asset": stock_name,
+                        "Holding Source": f"MF: {scheme_name}",
+                        "Sector": sector,
+                        "Exposure Value (₹)": calculated_val
+                    })
+                
+                # Account for remaining unmapped MF cash/stocks
+                if mapped_weight < 100:
+                    remaining_val = mf_total_val * ((100 - mapped_weight) / 100.0)
+                    all_rows.append({
+                        "Company / Asset": f"{scheme_name} (Other Stocks/Cash)",
+                        "Holding Source": f"MF: {scheme_name}",
+                        "Sector": "Other / Diversified MF",
+                        "Exposure Value (₹)": remaining_val
+                    })
+            else:
+                # Fallback if MF is not in lookup table
+                all_rows.append({
+                    "Company / Asset": scheme_name,
+                    "Holding Source": "Mutual Fund (Unmapped)",
+                    "Sector": "Other / Diversified MF",
+                    "Exposure Value (₹)": mf_total_val
+                })
 
-            # --- METRICS DISPLAY ---
-            total_invested = (df["Quantity"] * df["Avg Price (₹)"]).sum()
-            total_current = df["Current Value (₹)"].sum()
-            total_pnl = df["P&L (₹)"].sum()
-            
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Total Investment", f"₹{total_invested:,.2f}")
-            col2.metric("Current Portfolio Value", f"₹{total_current:,.2f}")
-            col3.metric("Overall P&L", f"₹{total_pnl:,.2f}", delta=f"{total_pnl:,.2f}")
-            
-            st.markdown("---")
-            
-            # --- CHARTS ---
-            chart_col1, chart_col2 = st.columns(2)
-            
-            with chart_col1:
-                st.subheader("Direct Stock Breakdown")
-                fig_stock = px.pie(df, values="Current Value (₹)", names="Company", hole=0.4)
-                st.plotly_chart(fig_stock, use_container_width=True)
-
-            with chart_col2:
-                st.subheader("Top Positions by Value")
-                fig_bar = px.bar(df.sort_values(by="Current Value (₹)", ascending=False), 
-                                 x="trading_symbol", y="Current Value (₹)", color="P&L (₹)")
-                st.plotly_chart(fig_bar, use_container_width=True)
-
-            # --- DETAILED DATA TABLE ---
-            st.subheader("Holding Details")
-            st.dataframe(
-                df[["Company", "trading_symbol", "Quantity", "Avg Price (₹)", "Current Price (₹)", "Current Value (₹)", "P&L (₹)"]],
-                use_container_width=True
-            )
-            
+    # --- RENDER ANALYSIS ---
+    if not all_rows:
+        st.warning("No portfolio data returned or token invalid.")
     else:
-        st.error(f"Failed to fetch holdings from Upstox API. Status: {res.status_code}")
-        st.json(res.json())
+        df_exposure = pd.DataFrame(all_rows)
+        
+        # Calculate Grand Totals
+        total_portfolio_val = df_exposure["Exposure Value (₹)"].sum()
+        
+        # Display Core KPIs
+        st.metric("Total Consolidated Portfolio Value", f"₹{total_portfolio_val:,.2f}")
+        st.markdown("---")
+        
+        # Visual Grid Layout
+        col1, col2 = st.columns(2)
+        
+        # Chart 1: Sector Breakdown (BFSI, FMCG, Tech, Renewables, etc.)
+        with col1:
+            st.subheader("🏢 Consolidated Sector Allocation")
+            sector_summary = df_exposure.groupby("Sector")["Exposure Value (₹)"].sum().reset_index()
+            sector_summary["Allocation (%)"] = (sector_summary["Exposure Value (₹)"] / total_portfolio_val) * 100
+            
+            fig_sector = px.pie(
+                sector_summary, 
+                values="Exposure Value (₹)", 
+                names="Sector", 
+                hole=0.4,
+                hover_data=["Allocation (%)"]
+            )
+            st.plotly_chart(fig_sector, use_container_width=True)
+
+        # Chart 2: Individual Company Overlap (Direct + MF Exposure Combined)
+        with col2:
+            st.subheader("🔍 Combined Company Concentration")
+            company_summary = df_exposure.groupby("Company / Asset")["Exposure Value (₹)"].sum().reset_index()
+            company_summary = company_summary.sort_values(by="Exposure Value (₹)", ascending=False).head(10)
+            
+            fig_company = px.bar(
+                company_summary, 
+                x="Company / Asset", 
+                y="Exposure Value (₹)", 
+                color="Company / Asset"
+            )
+            st.plotly_chart(fig_company, use_container_width=True)
+            
+        st.markdown("---")
+        
+        # Concentration Warnings
+        st.subheader("⚠️ Concentration Risk & Overlap Warnings")
+        top_company = company_summary.iloc[0]
+        top_company_pct = (top_company["Exposure Value (₹)"] / total_portfolio_val) * 100
+        
+        if top_company_pct > 15:
+            st.error(f"**High Exposure Warning:** Your combined holding in **{top_company['Company / Asset']}** accounts for **{top_company_pct:.1f}%** of your overall wealth (Direct Stock + MF constituents).")
+        else:
+            st.success("Your portfolio shows healthy single-stock diversification.")
+            
+        # Detailed Data Pivot Table
+        st.subheader("Detailed Allocation Breakdown")
+        st.dataframe(df_exposure, use_container_width=True)
