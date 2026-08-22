@@ -2,32 +2,45 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import requests
-import io
 
-st.set_page_config(page_title="Upstox Consolidated Portfolio Analyzer", layout="wide")
+st.set_page_config(page_title="Upstox Portfolio Analyzer", layout="wide")
 st.title("📊 Consolidated Equity & Mutual Fund Portfolio Analyzer")
 
 # --- SIDEBAR: AUTH & CONTROLS ---
 st.sidebar.header("🔑 1. Upstox API Settings")
 access_token = st.sidebar.text_input("Enter Upstox Access Token", type="password")
 
-# --- DEFAULT SECTOR MAPPING DATABASE ---
+# --- EXTENDED INDIAN STOCK SECTOR DATABASE ---
 DEFAULT_SECTOR_MAP = {
+    # BFSI / Banking
     "HDFCBANK": "BFSI / Banking", "ICICIBANK": "BFSI / Banking", "KOTAKBANK": "BFSI / Banking",
     "AXISBANK": "BFSI / Banking", "SBIN": "BFSI / Banking", "BAJFINANCE": "BFSI / Banking",
+    "BAJAJFINSV": "BFSI / Banking", "INDUSINDBK": "BFSI / Banking", "BANKBARODA": "BFSI / Banking",
+    # IT / Technology
     "INFY": "IT / Technology", "TCS": "IT / Technology", "WIPRO": "IT / Technology",
-    "HCLTECH": "IT / Technology", "TECHM": "IT / Technology",
+    "HCLTECH": "IT / Technology", "TECHM": "IT / Technology", "LTIM": "IT / Technology",
+    "COFORGE": "IT / Technology", "PERSISTENT": "IT / Technology",
+    # Renewables & Energy / Power
     "RELIANCE": "Renewables & Energy", "NTPC": "Renewables & Energy", "POWERGRID": "Renewables & Energy",
-    "TATAPOWER": "Renewables & Energy", "ADANIGREEN": "Renewables & Energy",
-    "HINDUNILVR": "FMCG", "ITC": "FMCG", "NESTLEIND": "FMCG", "BRITANNIA": "FMCG", "TATACONSUM": "FMCG",
+    "TATAPOWER": "Renewables & Energy", "ADANIGREEN": "Renewables & Energy", "BPCL": "Renewables & Energy",
+    "IOC": "Renewables & Energy", "ONGC": "Renewables & Energy",
+    # FMCG
+    "HINDUNILVR": "FMCG", "ITC": "FMCG", "NESTLEIND": "FMCG", "BRITANNIA": "FMCG",
+    "TATACONSUM": "FMCG", "DABUR": "FMCG", "GODREJCP": "FMCG", "MARICO": "FMCG",
+    # Pharma & Healthcare
     "SUNPHARMA": "Pharma & Healthcare", "CIPLA": "Pharma & Healthcare", "DRREDDY": "Pharma & Healthcare",
+    "DIVISLAB": "Pharma & Healthcare", "APOLLOHOSP": "Pharma & Healthcare", "MANKIND": "Pharma & Healthcare",
+    # Auto & Mobility
     "TATAMOTORS": "Auto & Mobility", "M&M": "Auto & Mobility", "MARUTI": "Auto & Mobility",
-    "TATASTEEL": "Metals & Mining", "HINDALCO": "Metals & Mining", "COALINDIA": "Metals & Mining"
+    "BAJAJ-AUTO": "Auto & Mobility", "HEROMOTOCO": "Auto & Mobility", "EICHERMOT": "Auto & Mobility",
+    # Metals & Mining
+    "TATASTEEL": "Metals & Mining", "HINDALCO": "Metals & Mining", "COALINDIA": "Metals & Mining",
+    "JSWSTEEL": "Metals & Mining", "VEDL": "Metals & Mining"
 }
 
-# Feature 4: Interactive Sector Override Editor
-st.sidebar.header("🏷️ 2. Manual Sector Manager")
-st.sidebar.caption("Override or set sectors for uncategorized direct stocks.")
+# Sector Override Manager
+st.sidebar.header("🏷️ 2. Manual Sector Override")
+st.sidebar.caption("Fix or update sector mapping for any stock.")
 user_override_symbol = st.sidebar.text_input("Stock Symbol (e.g. INFY)").upper().strip()
 user_override_sector = st.sidebar.text_input("Assign Sector (e.g. IT / Technology)").strip()
 
@@ -36,14 +49,13 @@ if "sector_db" not in st.session_state:
 
 if user_override_symbol and user_override_sector:
     st.session_state.sector_db[user_override_symbol] = user_override_sector
-    st.sidebar.success(f"Updated {user_override_symbol} ➔ {user_override_sector}")
+    st.sidebar.success(f"Mapped {user_override_symbol} ➔ {user_override_sector}")
 
-# Feature 6: AMC Excel / CSV Holdings Uploader
+# AMC Excel / CSV Holdings Uploader
 st.sidebar.header("📁 3. Upload AMC Portfolio Files")
-st.sidebar.caption("Upload monthly MF portfolio Excel/CSV from AMC websites.")
-uploaded_files = st.sidebar.file_uploader("Upload AMC Holdings Files", type=["xlsx", "xls", "csv"], accept_multiple_files=True)
+uploaded_files = st.sidebar.file_uploader("Upload AMC Holdings (Excel/CSV)", type=["xlsx", "xls", "csv"], accept_multiple_files=True)
 
-# --- UPSTOX API FETCHERS ---
+# --- API FETCHERS ---
 def fetch_direct_stocks(token):
     url = "https://api.upstox.com/v2/portfolio/long-term-holdings"
     headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
@@ -54,9 +66,9 @@ def fetch_mf_holdings(token):
     headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
     return requests.get(url, headers=headers)
 
-# --- MAIN EXECUTION ---
+# --- DASHBOARD LOGIC ---
 if not access_token:
-    st.info("👈 Please enter your **Upstox Access Token** in the sidebar to load your live portfolio.")
+    st.info("👈 Enter your **Upstox Access Token** in the sidebar to load holdings.")
 else:
     with st.spinner("Fetching live portfolio from Upstox..."):
         stock_res = fetch_direct_stocks(access_token)
@@ -65,11 +77,11 @@ else:
     stocks_list = []
     mf_list = []
 
-    # 1. PROCESS DIRECT STOCKS
+    # 1. PARSE DIRECT STOCKS
     if stock_res.status_code == 200:
         raw_stocks = stock_res.json().get("data", [])
         for s in raw_stocks:
-            symbol = s.get("trading_symbol", "").upper()
+            symbol = str(s.get("trading_symbol", "")).upper()
             comp_name = s.get("company_name", symbol)
             qty = float(s.get("quantity", 0))
             avg_price = float(s.get("average_price", 0))
@@ -80,7 +92,7 @@ else:
             pnl = current - invested
             pnl_pct = (pnl / invested * 100) if invested > 0 else 0.0
             
-            sector = st.session_state.sector_db.get(symbol, "Other / Uncategorized")
+            sector = st.session_state.sector_db.get(symbol, "Uncategorized")
             
             stocks_list.append({
                 "Symbol": symbol,
@@ -96,22 +108,23 @@ else:
                 "Return (%)": pnl_pct
             })
 
-    # 2. PROCESS MUTUAL FUNDS
+    # 2. PARSE MUTUAL FUNDS (FIELD RESOLVER FOR SCHEME NAME)
     if mf_res.status_code == 200:
         raw_mfs = mf_res.json().get("data", [])
         for m in raw_mfs:
-            scheme_name = m.get("scheme_name", "Unknown Mutual Fund")
+            # Resolves Upstox API variations: 'fund', 'scheme_name', or 'trading_symbol'
+            scheme_name = m.get("fund") or m.get("scheme_name") or m.get("fund_name") or m.get("trading_symbol") or "Mutual Fund"
             qty = float(m.get("quantity", 0))
             avg_nav = float(m.get("average_price", 0))
             last_nav = float(m.get("last_price", 0))
             
             invested = qty * avg_nav if avg_nav > 0 else float(m.get("cost_amount", 0))
             current = qty * last_nav if last_nav > 0 else float(m.get("last_value", 0))
-            pnl = current - invested
+            pnl = float(m.get("pnl", current - invested))
             pnl_pct = (pnl / invested * 100) if invested > 0 else 0.0
             
             mf_list.append({
-                "Symbol": m.get("isin", "MF"),
+                "Symbol": m.get("isin") or m.get("instrument_key") or "MF",
                 "Name": scheme_name,
                 "Type": "Mutual Fund",
                 "Sector": "Mutual Fund",
@@ -127,7 +140,7 @@ else:
     df_stocks = pd.DataFrame(stocks_list)
     df_mfs = pd.DataFrame(mf_list)
 
-    # --- FEATURE 1: TOP BIFURCATED METRICS ---
+    # --- TOP BIFURCATED METRICS ---
     st.subheader("📌 Portfolio Overview & Bifurcation")
     
     st_inv = df_stocks["Invested Amount (₹)"].sum() if not df_stocks.empty else 0
@@ -157,14 +170,14 @@ else:
         st.metric(label="Return", value=f"₹{mf_cur - mf_inv:,.2f}", delta=f"{mf_ret:.2f}%")
 
     with c3:
-        st.markdown("### 💼 Total Combined Portfolio")
+        st.markdown("### 💼 Total Portfolio")
         st.write(f"**Invested:** ₹{tot_inv:,.2f}")
         st.write(f"**Current Value:** ₹{tot_cur:,.2f}")
         st.metric(label="Return", value=f"₹{tot_cur - tot_inv:,.2f}", delta=f"{tot_ret:.2f}%")
 
     st.markdown("---")
 
-    # --- FEATURE 5: INVESTED VS CURRENT VALUE PIE CHARTS ---
+    # --- PIE CHARTS: INVESTED VS CURRENT VALUE ---
     st.subheader("📊 Direct Stock Portfolio Breakdown")
     if not df_stocks.empty:
         col_pie1, col_pie2 = st.columns(2)
@@ -178,7 +191,7 @@ else:
             fig_cur = px.pie(df_stocks, values="Current Value (₹)", names="Name", hole=0.4)
             st.plotly_chart(fig_cur, use_container_width=True)
             
-        # Sector Breakdown Chart
+        # Sector Breakdown
         st.markdown("**Direct Stock Sector Breakdown**")
         df_sector = df_stocks.groupby("Sector")["Current Value (₹)"].sum().reset_index()
         fig_sec = px.pie(df_sector, values="Current Value (₹)", names="Sector", color_discrete_sequence=px.colors.sequential.Teal)
@@ -188,42 +201,34 @@ else:
 
     st.markdown("---")
 
-    # --- FEATURE 2 & 3: DETAILED ALLOCATION TABLES ---
-    st.subheader("📋 Detailed Asset Breakdown")
+    # --- TABLES ---
+    st.subheader("📋 Detailed Holdings Tables")
     
     st.markdown("#### 1. Direct Stocks Table")
     if not df_stocks.empty:
         st.dataframe(df_stocks[["Name", "Symbol", "Sector", "Units/Qty", "Avg Price (₹)", "Current Price (₹)", "Invested Amount (₹)", "Current Value (₹)", "P&L (₹)", "Return (%)"]], use_container_width=True)
         
-    st.markdown("#### 2. Mutual Funds Table (Scheme Names)")
+    st.markdown("#### 2. Mutual Funds Table")
     if not df_mfs.empty:
         st.dataframe(df_mfs[["Name", "Symbol", "Units/Qty", "Avg Price (₹)", "Current Price (₹)", "Invested Amount (₹)", "Current Value (₹)", "P&L (₹)", "Return (%)"]], use_container_width=True)
 
     st.markdown("---")
 
-    # --- FEATURE 6: AMC EXCEL UPLOAD PARSER & UNDERLYING EXPOSURE CALCULATOR ---
-    st.subheader("🔍 True Company-Level Exposure (Direct + AMC File Parsing)")
-    st.caption("Combines direct stocks with parsed AMC holdings files to reveal true aggregate stock exposure.")
+    # --- AMC EXCEL UPLOADER & CONSOLIDATED EXPOSURE ---
+    st.subheader("🔍 Consolidated Company Exposure (Direct + AMC Parsed Files)")
 
     parsed_mf_stock_holdings = []
 
     if uploaded_files:
         for file in uploaded_files:
             try:
-                if file.name.endswith(".csv"):
-                    file_df = pd.read_csv(file)
-                else:
-                    file_df = pd.read_excel(file)
-                
-                # Standardize column headers
+                file_df = pd.read_csv(file) if file.name.endswith(".csv") else pd.read_excel(file)
                 file_df.columns = [str(c).strip().lower() for c in file_df.columns]
                 
-                # Dynamic column mapping logic
-                stock_col = next((c for c in file_df.columns if "company" in c or "stock" in c or "instrument" in c or "issuer" in c), None)
-                weight_col = next((c for c in file_df.columns if "weight" in c or "allocation" in c or "portfolio" in c or "%" in c), None)
+                stock_col = next((c for c in file_df.columns if "company" in c or "stock" in c or "instrument" in c), None)
+                weight_col = next((c for c in file_df.columns if "weight" in c or "allocation" in c or "%" in c), None)
                 
                 if stock_col and weight_col:
-                    # Match uploaded AMC file against active MF holdings
                     for _, mf_row in df_mfs.iterrows():
                         mf_value = mf_row["Current Value (₹)"]
                         for _, row in file_df.iterrows():
@@ -231,38 +236,24 @@ else:
                             try:
                                 weight_pct = float(str(row[weight_col]).replace("%", "").strip())
                                 indirect_val = mf_value * (weight_pct / 100.0)
-                                parsed_mf_stock_holdings.append({
-                                    "Stock": stock_name,
-                                    "Indirect MF Exposure (₹)": indirect_val
-                                })
+                                parsed_mf_stock_holdings.append({"Stock": stock_name, "Indirect MF Exposure (₹)": indirect_val})
                             except ValueError:
                                 continue
-                    st.success(f"Successfully processed AMC File: {file.name}")
+                    st.success(f"Parsed AMC File: {file.name}")
                 else:
-                    st.warning(f"Could not automatically detect 'Company' and 'Weight (%)' columns in {file.name}. Please ensure your Excel file has standard headers.")
+                    st.warning(f"Could not auto-detect columns in {file.name}. Ensure headers contain 'Company' and 'Weight'.")
             except Exception as e:
-                st.error(f"Error parsing file {file.name}: {e}")
+                st.error(f"Error reading {file.name}: {e}")
 
-    # Combine Direct Stocks + Parsed MF Indirect Stocks
+    # Combine Direct + MF Parsed Exposure
     combined_exposure = []
-
-    # Add Direct Stocks
     if not df_stocks.empty:
         for _, s in df_stocks.iterrows():
-            combined_exposure.append({
-                "Stock": s["Name"],
-                "Direct Exposure (₹)": s["Current Value (₹)"],
-                "Indirect MF Exposure (₹)": 0.0
-            })
+            combined_exposure.append({"Stock": s["Name"], "Direct Exposure (₹)": s["Current Value (₹)"], "Indirect MF Exposure (₹)": 0.0})
 
-    # Add Parsed MF Stocks
     if parsed_mf_stock_holdings:
         for p in parsed_mf_stock_holdings:
-            combined_exposure.append({
-                "Stock": p["Stock"],
-                "Direct Exposure (₹)": 0.0,
-                "Indirect MF Exposure (₹)": p["Indirect MF Exposure (₹)"]
-            })
+            combined_exposure.append({"Stock": p["Stock"], "Direct Exposure (₹)": 0.0, "Indirect MF Exposure (₹)": p["Indirect MF Exposure (₹)"]})
 
     if combined_exposure:
         df_exp = pd.DataFrame(combined_exposure)
@@ -271,14 +262,7 @@ else:
         df_agg = df_agg.sort_values(by="Total True Exposure (₹)", ascending=False)
         
         st.dataframe(df_agg, use_container_width=True)
-        
-        fig_true = px.bar(
-            df_agg.head(15), 
-            x="Stock", 
-            y=["Direct Exposure (₹)", "Indirect MF Exposure (₹)"],
-            title="Top 15 Aggregate Company Exposures (Direct + MF)",
-            barmode="stack"
-        )
+        fig_true = px.bar(df_agg.head(15), x="Stock", y=["Direct Exposure (₹)", "Indirect MF Exposure (₹)"], title="Top 15 Aggregate Company Exposures", barmode="stack")
         st.plotly_chart(fig_true, use_container_width=True)
     else:
-        st.info("Upload AMC portfolio disclosure files in the sidebar to calculate true consolidated company exposure.")
+        st.info("Upload monthly AMC portfolio Excel files in the sidebar to calculate true consolidated company exposure.")
